@@ -9,7 +9,7 @@ import type { WorkspaceFacts } from '../domain/derived-card.ts'
 import { deriveCard } from '../domain/derived-card.ts'
 import type { TaskStateStore } from '../adapters/task-states.ts'
 import type { WorkClaims } from '../app/claim-work.ts'
-import type { MessageSender } from '../app/send-message.ts'
+import type { MessageSender, SenderIdentity } from '../app/send-message.ts'
 import { summarizeCard } from '../domain/card.ts'
 import { describeAge, peerAddress, type PeerDescriptor } from '../domain/peer.ts'
 import { summarizeTaskState } from '../domain/task-state.ts'
@@ -41,12 +41,45 @@ function reachability(peer: PeerDescriptor, now: number): string {
   }
 }
 
+/** One row of a `peer_list` result: the calling session or one peer. */
+interface ListedSession {
+  readonly name: string
+  readonly session_id: string
+  readonly state: string
+  readonly is_self: boolean
+  readonly title?: string
+  readonly cwd?: string
+  readonly task?: string
+  readonly role?: string
+  working_on?: string[]
+}
+
+/**
+ * Render one `peer_list` row as the block a model reads.
+ * @param entry - the row to render.
+ * @returns a SELF or PEER block with the full session id on its own line.
+ */
+function renderEntry(entry: ListedSession): string {
+  const label = entry.is_self ? 'SELF' : 'PEER'
+  const title = entry.title ? ` "${entry.title}"` : ''
+  const lines = [`${label}: ${entry.name} [${entry.state}]${title}`, `  session_id: ${entry.session_id}`]
+  if (entry.cwd) lines.push(`  cwd: ${entry.cwd}`)
+  if (entry.task) lines.push(`  task: ${entry.task}`)
+  if (entry.role) lines.push(`  ${entry.role}`)
+  if (entry.working_on && entry.working_on.length > 0) {
+    lines.push(`  working on: ${entry.working_on.join(', ')}`)
+  }
+  return lines.join('\n')
+}
+
 /**
  * Build the `peer_list` tool.
  * @param sender - the send use case, which also owns discovery.
  * @param claims - live work claims, so a caller sees who is on what.
  * @param cards - capability cards, so a caller sees what each peer is for.
  * @param states - declared task states, so a caller sees what each peer's work is doing.
+ * @param identify - resolves the calling session's own name and directory, from its authoritative id.
+ * @param describe - reads a workspace for an honest card where none was published.
  * @returns the registry-ready definition.
  */
 export function createPeerListTool(
@@ -54,14 +87,17 @@ export function createPeerListTool(
   claims: WorkClaims,
   cards: CardStore,
   states: TaskStateStore,
+  identify: (sessionId: string, signal?: AbortSignal) => Promise<SenderIdentity>,
   describe?: (cwd: string) => Promise<Omit<WorkspaceFacts, 'sessionId'>>,
 ): ToolDefinition {
   return defineTool({
     name: 'peer_list',
     description: [
-      'List the other agent sessions you can send a message to with peer_send.',
-      'Use it before peer_send when you do not already know the exact name of the session you mean,',
-      'or when an address was ambiguous. Sessions marked "not running" can still be sent to:',
+      'List the agent sessions you can address with peer_send. The first entry, marked SELF, is this session:',
+      'its session_id is your own canonical ID, and other sessions see you under that same ID as a PEER.',
+      'You cannot send to SELF. Each entry shows the full session_id. Use this listing when you need the exact',
+      'session ID of a peer, or when an address was ambiguous.',
+      'Sessions marked "not running" can still be sent to:',
       'the message is queued and delivered when that session next starts.',
       'This returns only session identities — never their conversation contents.',
       'A session marked "not running" is not working on anything: do not conclude that a task belongs to one',
@@ -76,8 +112,17 @@ export function createPeerListTool(
           additionalProperties: false,
           properties: {
             name: { type: 'string', required: true, description: 'The address to pass to peer_send.' },
-            session_id: { type: 'string', required: true },
+            session_id: {
+              type: 'string',
+              required: true,
+              description: 'The full, canonical session ID. Exact and unambiguous, unlike a name.',
+            },
             state: { type: 'string', required: true, description: 'running, idle, or not running.' },
+            is_self: {
+              type: 'boolean',
+              required: true,
+              description: 'True for the calling session itself, which is always the first entry. It cannot be messaged.',
+            },
             title: { type: 'string' },
             cwd: { type: 'string' },
             role: {
@@ -97,32 +142,21 @@ export function createPeerListTool(
           },
         },
       },
-      render: (_args, value) => [
-        {
-          type: 'text',
-          text:
-            value.length === 0
-              ? 'No other sessions are reachable.'
-              : value
-                  .map((peer) => {
-                    const where = peer.cwd ? ` — ${peer.cwd}` : ''
-                    const title = peer.title ? ` "${peer.title}"` : ''
-                    const head = `${peer.name} [${peer.state}]${title}${where}`
-                    const held = peer.working_on ?? []
-                    const lines = [head]
-                    if (peer.task) lines.push(`    task: ${peer.task}`)
-                    if (peer.role) lines.push(`    ${peer.role}`)
-                    if (held.length > 0) lines.push(`    working on: ${held.join(', ')}`)
-                    return lines.join('\n')
-                  })
-                  .join('\n'),
-        },
-      ],
+      render: (_args, value) => {
+        if (value.length === 0) return [{ type: 'text', text: 'No sessions are reachable.' }]
+        const blocks = value.map(renderEntry)
+        // The calling session is always listed, so "no peers" is its only other case.
+        if (value.every((entry) => entry.is_self)) blocks.push('No other sessions are reachable.')
+        return [{ type: 'text', text: blocks.join('\n\n') }]
+      },
     },
     presentCall: () => presentListCall(),
     async execute(_args, exec) {
+      // The caller is read from the execution, never from arguments: a model
+      // cannot list itself as someone else, or ask for a SELF it does not own.
       const self = requireCallerSessionId(exec)
-      const [peers, held, published, declared] = await Promise.all([
+      const [identity, peers, held, published, declared] = await Promise.all([
+        identify(self, exec.signal),
         sender.peers(self, exec.signal),
         claims.all(),
         cards.readAll(),
@@ -135,22 +169,30 @@ export function createPeerListTool(
       // one, marked as inferred so nobody mistakes it for a statement.
       if (describe !== undefined) {
         const now = Date.now()
+        const candidates = [
+          { sessionId: self, cwd: identity.cwd },
+          ...peers.map((peer) => ({ sessionId: peer.sessionId, cwd: peer.cwd })),
+        ]
         await Promise.all(
-          peers
-            .filter((peer) => !cardBySession.has(peer.sessionId) && peer.cwd !== undefined)
-            .map(async (peer) => {
+          candidates
+            .filter((entry) => !cardBySession.has(entry.sessionId) && entry.cwd !== undefined)
+            .map(async (entry) => {
               try {
-                const facts = await describe(peer.cwd as string)
-                const card = deriveCard({ sessionId: peer.sessionId, ...facts }, now)
-                if (card !== undefined) cardBySession.set(peer.sessionId, card)
+                const facts = await describe(entry.cwd as string)
+                const card = deriveCard({ sessionId: entry.sessionId, ...facts }, now)
+                if (card !== undefined) cardBySession.set(entry.sessionId, card)
               } catch {
                 // A listing must survive an unreadable directory.
               }
             }),
         )
       }
-      // A wait is recorded as a session id; a reader needs the address.
-      const addressBySession = new Map(peers.map((peer) => [peer.sessionId, peerAddress(peer)]))
+      // A wait is recorded as a session id; a reader needs the address. The
+      // calling session is included, so a peer waiting on it reads its name.
+      const addressBySession = new Map<string, string>([
+        [self, identity.name],
+        ...peers.map((peer): [string, string] => [peer.sessionId, peerAddress(peer)]),
+      ])
       const stateBySession = new Map(declared.map((state) => [state.sessionId, state]))
 
       /** Claimed resources by holding session, so a caller sees who is on what. */
@@ -161,24 +203,44 @@ export function createPeerListTool(
         byHolder.set(claim.sessionId, list)
       }
 
-      return peers.map((peer) => {
-        const now = Date.now()
-      const working = byHolder.get(peer.sessionId) ?? []
-        const card = cardBySession.get(peer.sessionId)
-        const task = stateBySession.get(peer.sessionId)
+      /** The role, task and claims a session has, shared by the SELF and PEER rows. */
+      const metadataFor = (sessionId: string) => {
+        const card = cardBySession.get(sessionId)
+        const task = stateBySession.get(sessionId)
+        const working = byHolder.get(sessionId) ?? []
         return {
-          name: peerAddress(peer),
-          session_id: peer.sessionId,
-          state: reachability(peer, now),
-          ...(peer.title === undefined ? {} : { title: peer.title }),
-          ...(peer.cwd === undefined ? {} : { cwd: peer.cwd }),
           ...(task === undefined
             ? {}
             : { task: summarizeTaskState(task, (id) => addressBySession.get(id)) }),
           ...(card === undefined ? {} : { role: summarizeCard(card) }),
           ...(working.length === 0 ? {} : { working_on: working }),
         }
-      })
+      }
+
+      const selfEntry: ListedSession = {
+        name: identity.name,
+        session_id: self,
+        // The caller is, by definition, running: it is the session making this call.
+        state: 'running',
+        is_self: true,
+        ...(identity.cwd === undefined ? {} : { cwd: identity.cwd }),
+        ...metadataFor(self),
+      }
+
+      const now = Date.now()
+      const peerEntries = peers.map(
+        (peer): ListedSession => ({
+          name: peerAddress(peer),
+          session_id: peer.sessionId,
+          state: reachability(peer, now),
+          is_self: false,
+          ...(peer.title === undefined ? {} : { title: peer.title }),
+          ...(peer.cwd === undefined ? {} : { cwd: peer.cwd }),
+          ...metadataFor(peer.sessionId),
+        }),
+      )
+
+      return [selfEntry, ...peerEntries]
     },
   })
 }
