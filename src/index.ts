@@ -211,7 +211,7 @@ export function apply(ctx: Context, config: Config): void {
     const definitions = [
       // Addressing and delivery are the plugin; without them nothing else has a
       // point, so they are not optional.
-      createPeerListTool(sender, claims, cards, taskStates, (cwd) => workspace.read(cwd)),
+      createPeerListTool(sender, claims, cards, taskStates, identify, (cwd) => workspace.read(cwd)),
       createPeerSendTool(sender, identify, cards, config.groups, config.maxFanout),
       // Held messages only exist under the `hold` policy. Registering the tool
       // that reads them anywhere else spends model attention on a list that is

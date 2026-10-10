@@ -229,22 +229,32 @@ exist otherwise and a tool that always reads an empty list is pure overhead.
 
 ### `peer_list`
 
-Sessions this one can address — name, state, title, directory. Identities only;
-never their contents.
+The sessions this one can address: its own entry first, marked `SELF`, then each
+peer marked `PEER`. Every entry shows the full session ID, which is the same ID
+every other session sees for it. Identities only; never their contents.
 
 ```
-payments-api [running] "Add tenant_id to charges" — /repo/test-project
-    "payments-api" — Owns api/ and the charge contract. I do NOT own client code. · owns api · groups: #backend
-    working on: api/charges.ts (adding a required tenant_id to ChargeRequest)
-checkout-client [idle] "Wire up checkout submit" — /repo/test-project
-    task: blocked on docs-writer: waiting on billing wording before updating checkout
-    "checkout-client" — Owns client/ and the checkout flow. · owns client · groups: #backend
-ready-57a1 [not running] "ready." — /repo/test-project
+SELF: payments-api [running] "Add tenant_id to charges"
+  session_id: 3f9c1d2e-8a4b-4c7d-9e21-5b6a0f7c2d10
+  cwd: /repo/test-project
+  "payments-api" — Owns api/ and the charge contract. I do NOT own client code. · owns api · groups: #backend
+  working on: api/charges.ts (adding a required tenant_id to ChargeRequest)
+
+PEER: checkout-client [idle] "Wire up checkout submit"
+  session_id: 7a0d5b13-2c6e-4f8a-b9d4-e1c3a8f52b67
+  cwd: /repo/test-project
+  task: blocked on docs-writer: waiting on billing wording before updating checkout
+  "checkout-client" — Owns client/ and the checkout flow. · owns client · groups: #backend
+
+PEER: ready-57a1 [not running] "ready."
+  session_id: c41e9a07-5d3b-4b2f-8e6a-0f9d7b1c3e54
+  cwd: /repo/test-project
 ```
 
-A session that published a card is listed by its **alias** — the last line above
-is one that did not, folded from a session whose first reply happened to be
-"ready.", which is exactly why an alias is worth publishing. Names are
+`peer_send` never delivers to the `SELF` entry. A session that published a card is
+listed by its **alias** — the last entry above is one that did not, folded from a
+session whose first reply happened to be "ready.", which is exactly why an alias
+is worth publishing. Names are
 collision-disambiguated, so an address you read in one listing still resolves in
 the next. A wait is stored as a session id, because that is the only form a
 deadlock cycle can be walked in, but it is *shown* as the address you would use

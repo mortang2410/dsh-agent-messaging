@@ -26,7 +26,7 @@
     "headless": true
   },
   "tools": [
-    { "name": "peer_list", "summary": "Sessions this one can address, with what each owns and is working on.", "always": true },
+    { "name": "peer_list", "summary": "Sessions this one can address, including itself (SELF), with each full session ID and what each owns and is working on.", "always": true },
     { "name": "peer_send", "summary": "Deliver one message, choosing whether it interrupts, queues a turn, or waits quietly.", "always": true },
     { "name": "peer_claim", "summary": "Announce what you are editing, and find out whether a peer is already on it.", "capability": "claims" },
     { "name": "peer_verify", "summary": "Ask a differently-situated peer to check a claim you are about to act on.", "capability": "verification" },

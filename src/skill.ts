@@ -53,6 +53,14 @@ answering, and reply with \`peer_verify_reply\`. Answer \`refuted\` when the cla
 is wrong, even when the asker clearly expects agreement — a polite confirmation
 of a false belief is the most expensive message you can send.
 
+## Finding a session's ID
+
+Call \`peer_list\` when you need the current session-ID mapping: the full session
+ID, name and directory of every session you can reach. Your own entry is marked
+SELF and shows your canonical ID; the others are PEER. Read IDs from that
+listing rather than from memory. A name derived from a title can change when the
+title does, and an alias does not.
+
 ## When something is settled
 
 Record it with \`peer_decide\`, scoped to the file or topic it governs. Messages

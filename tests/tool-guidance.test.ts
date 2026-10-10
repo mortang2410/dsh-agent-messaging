@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
+import { createPeerListTool } from '../src/tools/peer-list.ts'
 import { createPeerSendTool } from '../src/tools/peer-send.ts'
 import type { MessageSender } from '../src/app/send-message.ts'
+import type { WorkClaims } from '../src/app/claim-work.ts'
+import type { CardStore } from '../src/adapters/cards.ts'
+import type { TaskStateStore } from '../src/adapters/task-states.ts'
+import { SKILL_BODY } from '../src/skill.ts'
 
 /**
  * Guidance that a live run proved load-bearing.
@@ -33,5 +38,29 @@ describe('peer_send guidance', () => {
   it('still explains what each delivery mode costs', () => {
     expect(sendTool.description).toMatch(/steer.*interrupts/i)
     expect(sendTool.description).toMatch(/context.*without waking it/i)
+  })
+})
+
+const listTool = createPeerListTool(
+  {} as MessageSender,
+  {} as WorkClaims,
+  {} as CardStore,
+  {} as TaskStateStore,
+  async () => ({ sessionId: 's', name: 'n' }),
+)
+
+describe('peer_list guidance', () => {
+  it('marks the calling session SELF and says it cannot be messaged', () => {
+    expect(listTool.description).toMatch(/first entry, marked SELF/)
+    expect(listTool.description).toMatch(/cannot send to SELF/)
+  })
+
+  it('points a model at the full session_id when it needs an exact ID', () => {
+    expect(listTool.description).toMatch(/full session_id/)
+  })
+
+  it('tells the coordination skill when to call peer_list for the session-ID mapping', () => {
+    expect(SKILL_BODY).toContain('`peer_list` when you need the current session-ID mapping')
+    expect(SKILL_BODY).toContain('SELF')
   })
 })
