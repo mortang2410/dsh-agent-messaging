@@ -7,8 +7,7 @@ import { renderInbound } from '../src/domain/render.ts'
 /** A complete source record, as the sink writes one today. */
 function source(extra: Record<string, unknown> = {}): Record<string, unknown> {
   return {
-    kind: 'plugin',
-    plugin: 'dsh-agent-messaging',
+    kind: 'plugin:dsh-agent-messaging',
     form: 'relay',
     senderSessionId: 'session-a',
     senderName: 'payments-api',
@@ -40,7 +39,9 @@ describe('readPeerMessage', () => {
     expect(readPeerMessage([])).toBeNull()
     expect(readPeerMessage({ kind: 'user' })).toBeNull()
     // Another plugin's relay: same form, different producer.
-    expect(readPeerMessage(source({ plugin: 'some-other-plugin' }))).toBeNull()
+    expect(readPeerMessage(source({ kind: 'plugin:some-other-plugin' }))).toBeNull()
+    // The retired bare kind is never presented, even when it names this plugin.
+    expect(readPeerMessage(source({ kind: 'plugin', plugin: 'dsh-agent-messaging' }))).toBeNull()
     // Ours, but not a relayed message.
     expect(readPeerMessage(source({ form: 'notice' }))).toBeNull()
   })

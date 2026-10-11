@@ -7,7 +7,7 @@
  */
 
 import type { AgentRegistry } from '@deepseek-ai/dsh-agent'
-import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { createUserMessage, type MessageSource } from '@deepseek-ai/dsh-llm'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 
 import { decideAuthority, type AuthorityPolicy, type PeerAuthority } from '../domain/authority.ts'
@@ -31,8 +31,12 @@ import { PLUGIN_NAME } from '../plugin-name.ts'
  * only. Every field is a plain JSON scalar, because a session log stores it.
  */
 export interface PeerMessageSource {
-  readonly kind: 'plugin'
-  readonly plugin: typeof PLUGIN_NAME
+  /**
+   * The producer-owned kind: `plugin:<name>`, the form DSH's session format
+   * accepts for a plugin's message. The bare `plugin` kind is refused when the
+   * session adopts the message, which fails the turn that carries it.
+   */
+  readonly kind: `plugin:${typeof PLUGIN_NAME}`
   readonly form: 'relay'
   /**
    * The sending session's id — the authoritative identity, and the field the
@@ -86,8 +90,7 @@ export class AgentInboxSink implements InboxSink {
     const external = envelope.from.sessionId.startsWith('a2a:')
     const authority = external ? 'inform' : decideAuthority(this.#authority, envelope.from)
     const source: PeerMessageSource = {
-      kind: 'plugin',
-      plugin: PLUGIN_NAME,
+      kind: `plugin:${PLUGIN_NAME}`,
       form: 'relay',
       senderSessionId: envelope.from.sessionId,
       senderName: envelope.from.name,
@@ -100,7 +103,10 @@ export class AgentInboxSink implements InboxSink {
     }
     const message = createUserMessage({
       content: [{ type: 'text', text: renderInbound(envelope, authority) }],
-      source,
+      // dsh-llm's MessageSource still types the retired `plugin` wrapper, which
+      // the session format refuses. The runtime shape is `plugin:<name>`, checked
+      // against the session format validator outside this test suite.
+      source: source as unknown as MessageSource,
     })
 
     switch (envelope.mode) {

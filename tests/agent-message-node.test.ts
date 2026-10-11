@@ -21,8 +21,7 @@ const envelope = createEnvelope({
 })
 
 const PEER_SOURCE = {
-  kind: 'plugin',
-  plugin: 'dsh-agent-messaging',
+  kind: 'plugin:dsh-agent-messaging',
   form: 'relay',
   senderSessionId: 'session-a',
   senderName: 'payments-api',
