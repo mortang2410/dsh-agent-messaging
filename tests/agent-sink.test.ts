@@ -48,8 +48,7 @@ describe('AgentInboxSink', () => {
 
     expect(deliveries).toHaveLength(1)
     expect(deliveries[0]?.message.source).toEqual({
-      kind: 'plugin',
-      plugin: 'dsh-agent-messaging',
+      kind: 'plugin:dsh-agent-messaging',
       form: 'relay',
       senderSessionId: 'session-a',
       senderName: 'payments-api',

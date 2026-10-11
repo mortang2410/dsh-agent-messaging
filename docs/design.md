@@ -126,8 +126,9 @@ reports, so the shape is the harness's, not an invention.
 one", and the subagent report path already emits it. A new form would fragment the
 vocabulary and leave UI consumers with two things to special-case.
 
-Messages are attributed `{ kind: 'plugin', plugin: 'dsh-agent-messaging', form:
-'relay' }`, which is the merge-extensible source shape `MessageSourceMap` expects.
+Messages are attributed `{ kind: 'plugin:dsh-agent-messaging', form: 'relay' }`. The
+producer-owned `plugin:<name>` kind is the form DSH's session format accepts; the bare
+`plugin` kind is refused on adoption and fails the turn.
 
 ### Spool for sessions that are not running
 

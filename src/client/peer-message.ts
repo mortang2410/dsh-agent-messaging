@@ -78,7 +78,7 @@ function readTime(value: unknown): number | undefined {
 export function readPeerMessage(source: unknown): PeerMessage | null {
   const record = asRecord(source)
   if (record === null) return null
-  if (record['kind'] !== 'plugin' || record['plugin'] !== PLUGIN_NAME) return null
+  if (record['kind'] !== `plugin:${PLUGIN_NAME}`) return null
   if (record['form'] !== 'relay') return null
 
   // The sender's id is the one fact a card cannot be honest without: it is the
