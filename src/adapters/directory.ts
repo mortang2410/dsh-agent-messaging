@@ -23,10 +23,10 @@ import type { PresenceStore } from './presence.ts'
  * listing: the cache matches them against its record and reads no log.
  */
 export interface CachedTitleMeta {
+  readonly version: number
   readonly id: SessionId
   readonly createdAt: number
   readonly isSeeded?: boolean
-  readonly formatVersion?: number
   readonly cwd?: string
 }
 
