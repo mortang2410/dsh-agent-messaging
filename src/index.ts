@@ -126,7 +126,8 @@ export function apply(ctx: Context, config: Config): void {
     // Titles are the one thing peer discovery needs from a session's history, and
     // a fold costs a whole log decode. The durable projection cache serves them
     // from checkpoints with no log read; a host without it falls back to folding.
-    projectionCache: ctx.get('sessionProjectionCache') as CachedTitleSource | undefined,
+    // Resolved per listing: its async init can still be pending when this applies.
+    projectionCache: () => ctx.get('sessionProjectionCache') as CachedTitleSource | undefined,
     agents: ctx.agents,
     presence,
     logger,

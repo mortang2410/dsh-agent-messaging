@@ -53,10 +53,14 @@ export interface PeerDirectoryOptions {
   readonly presence: PresenceStore
   readonly logger: Logger
   /**
-   * The durable projection cache, when the deployment mounts one: the only
+   * Reads the durable projection cache, when the deployment mounts one: the only
    * source of titles that reads no session log.
+   *
+   * A reader rather than the service, because Cordis activation is service-driven:
+   * the cache's async init may still be pending when this plugin applies, and a
+   * value captured then would stay undefined for the life of the process.
    */
-  readonly projectionCache?: CachedTitleSource | undefined
+  readonly projectionCache?: (() => CachedTitleSource | undefined) | undefined
   /** Whether sessions created as subagent children are addressable. */
   readonly includeSubagents: boolean
   /** External agents this deployment can reach, keyed by alias. */
@@ -79,17 +83,19 @@ export class SessionQueryPeerDirectory implements PeerDirectory {
   readonly #agents: AgentRegistry
   readonly #presence: PresenceStore
   readonly #logger: Logger
-  readonly #projectionCache: CachedTitleSource | undefined
+  readonly #readProjectionCache: (() => CachedTitleSource | undefined) | undefined
   readonly #includeSubagents: boolean
   readonly #a2aEndpoints: Record<string, A2AEndpoint>
   readonly #readAliases: () => Promise<ReadonlyMap<string, string>>
+  /** The listing this tick's callers share, cleared when it settles. */
+  #listing: Promise<readonly PeerDescriptor[]> | undefined
 
   constructor(options: PeerDirectoryOptions) {
     this.#sessionQuery = options.sessionQuery
     this.#agents = options.agents
     this.#presence = options.presence
     this.#logger = options.logger
-    this.#projectionCache = options.projectionCache
+    this.#readProjectionCache = options.projectionCache
     this.#includeSubagents = options.includeSubagents
     this.#a2aEndpoints = options.a2aEndpoints ?? {}
     this.#readAliases = options.readAliases ?? (() => Promise.resolve(new Map()))
@@ -101,6 +107,21 @@ export class SessionQueryPeerDirectory implements PeerDirectory {
    * @returns the peer set with names assigned and locations resolved.
    */
   async list(signal?: AbortSignal): Promise<readonly PeerDescriptor[]> {
+    // One listing per tick: callers that ask at the same moment (peer_list asks for
+    // its own identity and its peer set together) share one store walk instead of
+    // paying it twice.
+    if (this.#listing !== undefined) return this.#listing
+    const pending = this.#listOnce(signal)
+    this.#listing = pending
+    try {
+      return await pending
+    } finally {
+      this.#listing = undefined
+    }
+  }
+
+  /** Build one peer listing; concurrent callers share it through {@link list}. */
+  async #listOnce(signal?: AbortSignal): Promise<readonly PeerDescriptor[]> {
     const startedAt = Date.now()
     const [records, remoteHosts, aliases] = await Promise.all([
       this.#sessionQuery.listSessions(signal),
@@ -116,6 +137,7 @@ export class SessionQueryPeerDirectory implements PeerDirectory {
     // cache: a log fold per session is a whole log decode, which is the entire
     // cost of listing peers on a large store.
     const titlesStartedAt = Date.now()
+    const cacheUsed = this.#readProjectionCache?.() !== undefined
     const titles = await this.#readTitles(visible.map((record) => record.header), signal)
 
     const sources: PeerNameSource[] = visible.map((record) => ({
@@ -175,9 +197,10 @@ export class SessionQueryPeerDirectory implements PeerDirectory {
     const elapsed = Date.now() - startedAt
     if (elapsed >= SLOW_LISTING_MS) {
       this.#logger.warn(
-        `peer listing took ${elapsed}ms: ${records.length} stored sessions, ${visible.length} listed, ` +
+        `peer listing took ${elapsed}ms over store listing, presence and aliases: ` +
+          `${records.length} stored sessions, ${visible.length} listed, ` +
           `${titles.size} titles (${Date.now() - titlesStartedAt}ms), ` +
-          `${this.#projectionCache === undefined ? 'folded from logs' : 'from the projection cache'}`,
+          `${cacheUsed ? 'from the projection cache' : 'folded from logs'}`,
       )
     }
     return [...sessions, ...external]
@@ -225,12 +248,14 @@ export class SessionQueryPeerDirectory implements PeerDirectory {
     const titles = new Map<string, string>()
     if (headers.length === 0) return titles
 
-    const cache = this.#projectionCache
+    const cache = this.#readProjectionCache?.()
     if (cache !== undefined) {
-      // A record that is not current still owes its predecessor title; both faces
-      // view stored rows and neither opens a log.
+      // A served block can carry a null title, and that must not hide the
+      // predecessor face; chain on the title, not on the block. Both faces view
+      // stored rows and neither opens a log.
       for (const header of headers) {
-        const title = cachedTitle(cache.cachedSnapshot(header, ['title']) ?? cache.cachedPredecessorTitle(header))
+        const title = cachedTitle(cache.cachedSnapshot(header, ['title'])) ??
+          cachedTitle(cache.cachedPredecessorTitle(header))
         if (title !== undefined) titles.set(header.id, title)
       }
       return titles
