@@ -107,6 +107,37 @@ describe('peer titles', () => {
     expect(foldCalls.count).toBe(0)
   })
 
+  it('reports where a slow listing spent its time', async () => {
+    vi.useFakeTimers()
+    try {
+      const warns: string[] = []
+      const logger = { warn: (line: string) => warns.push(line), info: () => {}, error: () => {}, debug: () => {} }
+      const sessionQuery = {
+        listSessions: async () => {
+          vi.advanceTimersByTime(2_000)
+          return [{ header: header('s1'), revision: 'r1' }]
+        },
+        readTitleSnapshots: async () => [],
+      }
+      const cache = caching((meta) => `cached ${meta.id}`)
+      const peers = new SessionQueryPeerDirectory({
+        sessionQuery: sessionQuery as never,
+        agents: { get: () => undefined } as never,
+        presence: { readPeers: async () => [] } as never,
+        logger: logger as never,
+        includeSubagents: false,
+        projectionCache: cache,
+      })
+      await peers.list()
+      expect(warns).toHaveLength(1)
+      expect(warns[0]).toContain('peer listing took 2000ms')
+      expect(warns[0]).toContain('1 stored sessions')
+      expect(warns[0]).toContain('from the projection cache')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('folds through the corpus once when the host mounts no cache', async () => {
     const foldCalls = { count: 0 }
     const peers = await directory({ foldCalls }).list()

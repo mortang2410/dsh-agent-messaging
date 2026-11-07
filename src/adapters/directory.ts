@@ -70,6 +70,9 @@ export interface PeerDirectoryOptions {
   readonly readAliases?: () => Promise<ReadonlyMap<string, string>>
 }
 
+/** A listing slower than this reports its own timing, because the caller cannot see where the time went. */
+const SLOW_LISTING_MS = 1_000
+
 /** Builds {@link PeerDescriptor}s from the harness session corpus. */
 export class SessionQueryPeerDirectory implements PeerDirectory {
   readonly #sessionQuery: SessionQueryService
@@ -98,6 +101,7 @@ export class SessionQueryPeerDirectory implements PeerDirectory {
    * @returns the peer set with names assigned and locations resolved.
    */
   async list(signal?: AbortSignal): Promise<readonly PeerDescriptor[]> {
+    const startedAt = Date.now()
     const [records, remoteHosts, aliases] = await Promise.all([
       this.#sessionQuery.listSessions(signal),
       this.#readPresence(),
@@ -111,6 +115,7 @@ export class SessionQueryPeerDirectory implements PeerDirectory {
     // Titles come from durable checkpoints when the host mounts the projection
     // cache: a log fold per session is a whole log decode, which is the entire
     // cost of listing peers on a large store.
+    const titlesStartedAt = Date.now()
     const titles = await this.#readTitles(visible.map((record) => record.header), signal)
 
     const sources: PeerNameSource[] = visible.map((record) => ({
@@ -165,6 +170,16 @@ export class SessionQueryPeerDirectory implements PeerDirectory {
       } satisfies PeerDescriptor
     })
 
+    // A listing that takes seconds is a store walk, and the caller cannot see
+    // which stage paid it: say so, with the counts that name the cause.
+    const elapsed = Date.now() - startedAt
+    if (elapsed >= SLOW_LISTING_MS) {
+      this.#logger.warn(
+        `peer listing took ${elapsed}ms: ${records.length} stored sessions, ${visible.length} listed, ` +
+          `${titles.size} titles (${Date.now() - titlesStartedAt}ms), ` +
+          `${this.#projectionCache === undefined ? 'folded from logs' : 'from the projection cache'}`,
+      )
+    }
     return [...sessions, ...external]
   }
 
