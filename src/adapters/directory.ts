@@ -16,12 +16,47 @@ import { assignPeerNames, type PeerDescriptor, type PeerLocation, type PeerNameS
 import type { Logger, PeerDirectory } from '../ports/index.ts'
 import type { PresenceStore } from './presence.ts'
 
+/**
+ * The listing fields a cached projection read uses as its identity witness.
+ *
+ * These are the authoritative header values a caller already holds from the store
+ * listing: the cache matches them against its record and reads no log.
+ */
+export interface CachedTitleMeta {
+  readonly id: SessionId
+  readonly createdAt: number
+  readonly isSeeded?: boolean
+  readonly formatVersion?: number
+  readonly cwd?: string
+}
+
+/** One cached projection block: the wire values the checkpoint stored. */
+export interface CachedTitleBlock {
+  readonly values: Readonly<Record<string, unknown>>
+}
+
+/**
+ * The durable projection cache's zero-I/O read faces.
+ *
+ * Declared structurally so a host without @deepseek-ai/dsh-session-projection-cache
+ * needs no dependency, and a host with it passes the mounted service unchanged.
+ */
+export interface CachedTitleSource {
+  cachedSnapshot(meta: CachedTitleMeta, keys?: readonly string[]): CachedTitleBlock | undefined
+  cachedPredecessorTitle(meta: CachedTitleMeta): CachedTitleBlock | undefined
+}
+
 /** Construction inputs for {@link SessionQueryPeerDirectory}. */
 export interface PeerDirectoryOptions {
   readonly sessionQuery: SessionQueryService
   readonly agents: AgentRegistry
   readonly presence: PresenceStore
   readonly logger: Logger
+  /**
+   * The durable projection cache, when the deployment mounts one: the only
+   * source of titles that reads no session log.
+   */
+  readonly projectionCache?: CachedTitleSource | undefined
   /** Whether sessions created as subagent children are addressable. */
   readonly includeSubagents: boolean
   /** External agents this deployment can reach, keyed by alias. */
@@ -41,6 +76,7 @@ export class SessionQueryPeerDirectory implements PeerDirectory {
   readonly #agents: AgentRegistry
   readonly #presence: PresenceStore
   readonly #logger: Logger
+  readonly #projectionCache: CachedTitleSource | undefined
   readonly #includeSubagents: boolean
   readonly #a2aEndpoints: Record<string, A2AEndpoint>
   readonly #readAliases: () => Promise<ReadonlyMap<string, string>>
@@ -50,6 +86,7 @@ export class SessionQueryPeerDirectory implements PeerDirectory {
     this.#agents = options.agents
     this.#presence = options.presence
     this.#logger = options.logger
+    this.#projectionCache = options.projectionCache
     this.#includeSubagents = options.includeSubagents
     this.#a2aEndpoints = options.a2aEndpoints ?? {}
     this.#readAliases = options.readAliases ?? (() => Promise.resolve(new Map()))
@@ -71,8 +108,10 @@ export class SessionQueryPeerDirectory implements PeerDirectory {
       (record) => this.#includeSubagents || record.header.origin !== 'subagent',
     )
 
-    // One batched title read: per-session reads would be a round trip each.
-    const titles = await this.#readTitles(visible.map((record) => record.header.id), signal)
+    // Titles come from durable checkpoints when the host mounts the projection
+    // cache: a log fold per session is a whole log decode, which is the entire
+    // cost of listing peers on a large store.
+    const titles = await this.#readTitles(visible.map((record) => record.header), signal)
 
     const sources: PeerNameSource[] = visible.map((record) => ({
       sessionId: record.header.id,
@@ -158,17 +197,35 @@ export class SessionQueryPeerDirectory implements PeerDirectory {
   }
 
   /**
-   * Fold the latest title for each session, tolerating per-session failures.
-   * @param ids - the sessions to read.
+   * Read the latest title for each session without decoding a log when the
+   * deployment mounts the projection cache; fold through the corpus otherwise.
+   * @param headers - the listed sessions, whose headers are the cache's identity witness.
    * @param signal - shared cancellation.
-   * @returns session id to title, omitting sessions without one.
+   * @returns session id to title, omitting sessions without a title.
    */
-  async #readTitles(ids: readonly string[], signal?: AbortSignal): Promise<ReadonlyMap<string, string>> {
+  async #readTitles(
+    headers: readonly CachedTitleMeta[],
+    signal?: AbortSignal,
+  ): Promise<ReadonlyMap<string, string>> {
     const titles = new Map<string, string>()
-    if (ids.length === 0) return titles
+    if (headers.length === 0) return titles
+
+    const cache = this.#projectionCache
+    if (cache !== undefined) {
+      // A record that is not current still owes its predecessor title; both faces
+      // view stored rows and neither opens a log.
+      for (const header of headers) {
+        const title = cachedTitle(cache.cachedSnapshot(header, ['title']) ?? cache.cachedPredecessorTitle(header))
+        if (title !== undefined) titles.set(header.id, title)
+      }
+      return titles
+    }
 
     try {
-      const observations = await this.#sessionQuery.readTitleSnapshots(ids as readonly SessionId[], signal)
+      const observations = await this.#sessionQuery.readTitleSnapshots(
+        headers.map((header) => header.id),
+        signal,
+      )
       for (const observation of observations) {
         if (observation.status !== 'fulfilled') continue
         const title = observation.value.title?.title
@@ -182,4 +239,17 @@ export class SessionQueryPeerDirectory implements PeerDirectory {
     }
     return titles
   }
+}
+
+/**
+ * The title text a cached projection block carries, if any.
+ *
+ * The title projection's wire value is the latest logged text or null, so a block
+ * that served it holds a non-empty string.
+ * @param block - the viewed checkpoint block, or undefined when no row matched.
+ * @returns the title text, or undefined when the block carries none.
+ */
+function cachedTitle(block: CachedTitleBlock | undefined): string | undefined {
+  const value = block?.values.title
+  return typeof value === 'string' && value !== '' ? value : undefined
 }

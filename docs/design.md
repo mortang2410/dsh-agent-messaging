@@ -191,7 +191,9 @@ which defeats the attribution the receiver is shown.
 
 - **A first-party cross-host transport in the harness.** The `PeerTransport` port
   exists so the Unix socket can be swapped without touching the use cases.
-- **A session-title index.** Name derivation currently folds titles per listing;
-  a dedicated index would make it cheaper without changing addresses.
+- **A title source for hosts without the projection cache.** Titles are read from
+  durable checkpoints, so a listing decodes no log where the cache is mounted; a
+  host without it still folds one log per session, and a first-party index would
+  remove that last fold without changing addresses.
 - **Structured payloads.** The envelope is versioned (`protocol: 1`) so a future
   content type can be added without breaking existing peers.

@@ -22,7 +22,7 @@ import { ClaimStore } from './adapters/claims.ts'
 import { MetricsRecorder } from './adapters/metrics.ts'
 import { DecisionStore } from './adapters/decisions.ts'
 import { TaskStateStore } from './adapters/task-states.ts'
-import { SessionQueryPeerDirectory } from './adapters/directory.ts'
+import { SessionQueryPeerDirectory, type CachedTitleSource } from './adapters/directory.ts'
 import { WorkspaceReader } from './adapters/workspace.ts'
 import { PresenceStore, socketPathFor } from './adapters/presence.ts'
 import { FileOutboxSpool } from './adapters/spool.ts'
@@ -123,6 +123,10 @@ export function apply(ctx: Context, config: Config): void {
 
   const directory = new SessionQueryPeerDirectory({
     sessionQuery: ctx.sessionQuery,
+    // Titles are the one thing peer discovery needs from a session's history, and
+    // a fold costs a whole log decode. The durable projection cache serves them
+    // from checkpoints with no log read; a host without it falls back to folding.
+    projectionCache: ctx.get('sessionProjectionCache') as CachedTitleSource | undefined,
     agents: ctx.agents,
     presence,
     logger,
