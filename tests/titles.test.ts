@@ -258,6 +258,26 @@ describe('peer titles', () => {
     expect(sessionQuery.listSessions).not.toHaveBeenCalled()
   })
 
+  it('rejects a caller a provider aborts synchronously while the walk starts', async () => {
+    const controller = new AbortController()
+    const sessionQuery = {
+      listSessions: vi.fn(async () => {
+        // The provider runs before the caller's abort listener is attached.
+        controller.abort(new Error('cancelled while starting'))
+        return [{ header: header('s1'), revision: 'r1' }]
+      }),
+      readTitleSnapshots: async () => [],
+    }
+    const peers = new SessionQueryPeerDirectory({
+      sessionQuery: sessionQuery as never,
+      agents: { get: () => undefined } as never,
+      presence: { readPeers: async () => [] } as never,
+      logger: { warn: () => {}, info: () => {}, error: () => {}, debug: () => {} } as never,
+      includeSubagents: false,
+    })
+    await expect(peers.list(controller.signal)).rejects.toThrow('cancelled while starting')
+  })
+
   it('folds through the corpus once when the host mounts no cache', async () => {
     const foldCalls = { count: 0 }
     const peers = await directory({ foldCalls }).list()

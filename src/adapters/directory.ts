@@ -87,7 +87,7 @@ export class SessionQueryPeerDirectory implements PeerDirectory {
   readonly #includeSubagents: boolean
   readonly #a2aEndpoints: Record<string, A2AEndpoint>
   readonly #readAliases: () => Promise<ReadonlyMap<string, string>>
-  /** The listing this tick's callers share, cleared when it settles. */
+  /** The listing in flight that concurrent callers share, cleared when it settles. */
   #listing: Promise<readonly PeerDescriptor[]> | undefined
 
   constructor(options: PeerDirectoryOptions) {
@@ -118,6 +118,13 @@ export class SessionQueryPeerDirectory implements PeerDirectory {
     return await new Promise<readonly PeerDescriptor[]>((resolve, reject) => {
       const onAbort = () => { reject(signal.reason ?? new Error('peer listing aborted')) }
       signal.addEventListener('abort', onAbort, { once: true })
+      // Starting the walk can run a provider that aborts this caller synchronously,
+      // before the listener attaches; an already-aborted signal never fires again.
+      if (signal.aborted) {
+        signal.removeEventListener('abort', onAbort)
+        onAbort()
+        return
+      }
       shared.then((value) => {
         signal.removeEventListener('abort', onAbort)
         resolve(value)
@@ -266,7 +273,7 @@ export class SessionQueryPeerDirectory implements PeerDirectory {
    * Read the latest title for each session without decoding a log when the
    * deployment mounts the projection cache; fold through the corpus otherwise.
    * @param headers - the listed sessions, whose headers are the cache's identity witness.
-   * @param signal - shared cancellation.
+   * @param cache - the projection cache resolved once in this listing, or undefined to fold through the corpus.
    * @returns session id to title, omitting sessions without a title.
    */
   async #readTitles(
