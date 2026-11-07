@@ -103,28 +103,54 @@ export class SessionQueryPeerDirectory implements PeerDirectory {
 
   /**
    * List every addressable peer, newest session first.
-   * @param signal - optional cancellation for corpus reads.
+   * @param signal - cancels this caller's wait; the shared walk itself still runs to completion.
    * @returns the peer set with names assigned and locations resolved.
    */
   async list(signal?: AbortSignal): Promise<readonly PeerDescriptor[]> {
-    // One listing per tick: callers that ask at the same moment (peer_list asks for
-    // its own identity and its peer set together) share one store walk instead of
-    // paying it twice.
-    if (this.#listing !== undefined) return this.#listing
-    const pending = this.#listOnce(signal)
-    this.#listing = pending
-    try {
-      return await pending
-    } finally {
-      this.#listing = undefined
-    }
+    signal?.throwIfAborted()
+    // Callers that ask while a walk runs share it (peer_list asks for its own
+    // identity and its peer set together), so one store walk serves the burst.
+    const shared = this.#sharedListing()
+    if (signal === undefined) return shared
+    // The walk itself is not cancellable, so it carries no signal: sharing it must
+    // not let one caller's abort reject another caller whose signal is un-aborted.
+    // Each caller races the shared walk against its own cancellation instead.
+    return await new Promise<readonly PeerDescriptor[]>((resolve, reject) => {
+      const onAbort = () => { reject(signal.reason ?? new Error('peer listing aborted')) }
+      signal.addEventListener('abort', onAbort, { once: true })
+      shared.then((value) => {
+        signal.removeEventListener('abort', onAbort)
+        resolve(value)
+      }, (error: unknown) => {
+        signal.removeEventListener('abort', onAbort)
+        reject(error)
+      })
+    })
   }
 
-  /** Build one peer listing; concurrent callers share it through {@link list}. */
-  async #listOnce(signal?: AbortSignal): Promise<readonly PeerDescriptor[]> {
+  /** The listing in flight, or a new shared walk; cleared when it settles. */
+  #sharedListing(): Promise<readonly PeerDescriptor[]> {
+    const current = this.#listing
+    if (current !== undefined) return current
+    const walk = this.#listOnce()
+    this.#listing = walk
+    const clear = () => { if (this.#listing === walk) this.#listing = undefined }
+    walk.then(clear, clear)
+    return walk
+  }
+
+  /**
+   * Build one peer listing.
+   *
+   * Shared by concurrent callers for as long as the walk runs, so a caller that
+   * arrives mid-walk sees the row set from when the walk started, not a fresher
+   * one; that is the price of walking once per burst. A provider read here must
+   * not call {@link list} itself, because it would await this very walk.
+   */
+  async #listOnce(): Promise<readonly PeerDescriptor[]> {
     const startedAt = Date.now()
     const [records, remoteHosts, aliases] = await Promise.all([
-      this.#sessionQuery.listSessions(signal),
+      this.#sessionQuery.listSessions(),
       this.#readPresence(),
       this.#aliases(),
     ])
@@ -137,8 +163,10 @@ export class SessionQueryPeerDirectory implements PeerDirectory {
     // cache: a log fold per session is a whole log decode, which is the entire
     // cost of listing peers on a large store.
     const titlesStartedAt = Date.now()
-    const cacheUsed = this.#readProjectionCache?.() !== undefined
-    const titles = await this.#readTitles(visible.map((record) => record.header), signal)
+    // One resolve per listing: the report and the title read must agree on which
+    // source served the titles.
+    const cache = this.#readProjectionCache?.()
+    const titles = await this.#readTitles(visible.map((record) => record.header), cache)
 
     const sources: PeerNameSource[] = visible.map((record) => ({
       sessionId: record.header.id,
@@ -200,7 +228,7 @@ export class SessionQueryPeerDirectory implements PeerDirectory {
         `peer listing took ${elapsed}ms over store listing, presence and aliases: ` +
           `${records.length} stored sessions, ${visible.length} listed, ` +
           `${titles.size} titles (${Date.now() - titlesStartedAt}ms), ` +
-          `${cacheUsed ? 'from the projection cache' : 'folded from logs'}`,
+          `${cache !== undefined ? 'from the projection cache' : 'folded from logs'}`,
       )
     }
     return [...sessions, ...external]
@@ -243,12 +271,11 @@ export class SessionQueryPeerDirectory implements PeerDirectory {
    */
   async #readTitles(
     headers: readonly CachedTitleMeta[],
-    signal?: AbortSignal,
+    cache: CachedTitleSource | undefined,
   ): Promise<ReadonlyMap<string, string>> {
     const titles = new Map<string, string>()
     if (headers.length === 0) return titles
 
-    const cache = this.#readProjectionCache?.()
     if (cache !== undefined) {
       // A served block can carry a null title, and that must not hide the
       // predecessor face; chain on the title, not on the block. Both faces view
@@ -264,7 +291,6 @@ export class SessionQueryPeerDirectory implements PeerDirectory {
     try {
       const observations = await this.#sessionQuery.readTitleSnapshots(
         headers.map((header) => header.id),
-        signal,
       )
       for (const observation of observations) {
         if (observation.status !== 'fulfilled') continue

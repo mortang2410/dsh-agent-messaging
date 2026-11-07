@@ -57,13 +57,20 @@ function directory(options: {
   })
 }
 
-const caching = (titles: (meta: { id: string }) => string | undefined): CachedTitleSource => ({
+/** The two faces answer with their own title, so a test can tell which one served. */
+const caching = (
+  snapshot: (meta: { id: string }) => string | undefined,
+  predecessor: (meta: { id: string }) => string | undefined = () => undefined,
+  calls = { snapshot: 0, predecessor: 0 },
+): CachedTitleSource => ({
   cachedSnapshot: (meta, keys) => {
-    const title = keys?.includes('title') === true && witnessMatches(meta) ? titles(meta) : undefined
+    calls.snapshot += 1
+    const title = keys?.includes('title') === true && witnessMatches(meta) ? snapshot(meta) : undefined
     return title === undefined ? undefined : { values: { title } }
   },
   cachedPredecessorTitle: (meta) => {
-    const title = witnessMatches(meta) ? titles(meta) : undefined
+    calls.predecessor += 1
+    const title = witnessMatches(meta) ? predecessor(meta) : undefined
     return title === undefined ? undefined : { values: { title } }
   },
 })
@@ -71,9 +78,13 @@ const caching = (titles: (meta: { id: string }) => string | undefined): CachedTi
 describe('peer titles', () => {
   it('reads titles from the projection cache and never folds a log', async () => {
     const foldCalls = { count: 0 }
-    const cache = caching((meta) => `cached ${meta.id}`)
+    const calls = { snapshot: 0, predecessor: 0 }
+    const cache = caching((meta) => `cached ${meta.id}`, (meta) => `stale ${meta.id}`, calls)
     const peers = await directory({ cache, foldCalls }).list()
+    // The faces disagree on purpose: a snapshot hit must win, and consulting the
+    // predecessor at all is a second lookup the hit already answered.
     expect(peers.map((peer) => peer.title)).toEqual(['cached s1', 'cached s2'])
+    expect(calls.predecessor).toBe(0)
     expect(foldCalls.count).toBe(0)
   })
 
@@ -183,7 +194,6 @@ describe('peer titles', () => {
   })
 
   it('walks the store once when two callers list in the same tick', async () => {
-    const foldCalls = { count: 0 }
     const sessionQuery = {
       listSessions: vi.fn(async () => [{ header: header('s1'), revision: 'r1' }]),
       readTitleSnapshots: async () => [],
@@ -198,7 +208,54 @@ describe('peer titles', () => {
     const [first, second] = await Promise.all([peers.list(), peers.list()])
     expect(first).toEqual(second)
     expect(sessionQuery.listSessions).toHaveBeenCalledTimes(1)
-    expect(foldCalls.count).toBe(0)
+  })
+
+  it('rejects only the caller that aborted, not a peer sharing the walk', async () => {
+    let release: (() => void) | undefined
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const sessionQuery = {
+      listSessions: vi.fn(async () => {
+        await gate
+        return [{ header: header('s1'), revision: 'r1' }]
+      }),
+      readTitleSnapshots: async () => [],
+    }
+    const peers = new SessionQueryPeerDirectory({
+      sessionQuery: sessionQuery as never,
+      agents: { get: () => undefined } as never,
+      presence: { readPeers: async () => [] } as never,
+      logger: { warn: () => {}, info: () => {}, error: () => {}, debug: () => {} } as never,
+      includeSubagents: false,
+    })
+    const first = new AbortController()
+    const second = new AbortController()
+    const one = peers.list(first.signal)
+    const rejects = expect(one).rejects.toThrow('caller gave up')
+    const two = peers.list(second.signal)
+    first.abort(new Error('caller gave up'))
+    await rejects
+    release?.()
+    // The walk itself is not cancelled, so the caller that never aborted still gets it.
+    await expect(two).resolves.toHaveLength(1)
+    expect(sessionQuery.listSessions).toHaveBeenCalledTimes(1)
+  })
+
+  it('rejects an already-aborted caller before walking the store', async () => {
+    const sessionQuery = {
+      listSessions: vi.fn(async () => [{ header: header('s1'), revision: 'r1' }]),
+      readTitleSnapshots: async () => [],
+    }
+    const peers = new SessionQueryPeerDirectory({
+      sessionQuery: sessionQuery as never,
+      agents: { get: () => undefined } as never,
+      presence: { readPeers: async () => [] } as never,
+      logger: { warn: () => {}, info: () => {}, error: () => {}, debug: () => {} } as never,
+      includeSubagents: false,
+    })
+    const controller = new AbortController()
+    controller.abort(new Error('already gone'))
+    await expect(peers.list(controller.signal)).rejects.toThrow('already gone')
+    expect(sessionQuery.listSessions).not.toHaveBeenCalled()
   })
 
   it('folds through the corpus once when the host mounts no cache', async () => {
