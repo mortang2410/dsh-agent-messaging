@@ -63,4 +63,16 @@ describe('peer_list guidance', () => {
     expect(SKILL_BODY).toContain('`peer_list` when you need the current session-ID mapping')
     expect(SKILL_BODY).toContain('SELF')
   })
+
+  it('never promises a live row survives the cap it documents', () => {
+    // The cap can drop an older live peer — the cap-priority test in
+    // delivery-pipeline.test.ts proves it — so "running sessions are always
+    // listed" is a promise the tool cannot keep, and a model that trusts it
+    // reads an absent live session as one that does not exist.
+    const schema = listTool.parameters as { properties?: Record<string, { description?: string }> }
+    const properties = schema.properties ?? {}
+    const guidance = [listTool.description, ...Object.values(properties).map((param) => param.description ?? '')]
+    expect(guidance.join(' ')).not.toMatch(/always listed/i)
+    expect(properties.active_days?.description).toMatch(/max_sessions can still drop it/i)
+  })
 })

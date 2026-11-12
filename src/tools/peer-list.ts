@@ -211,7 +211,7 @@ export function createPeerListTool(
         type: 'number',
         default: DEFAULT_ACTIVE_DAYS,
         description:
-          `How many days back a session may have last been prompted and still be listed. Running sessions are always listed. Default ${DEFAULT_ACTIVE_DAYS}; 0 removes the age limit.`,
+          `How many days back a session may have last been prompted and still be listed. A session a live agent holds is listed whatever its age, though max_sessions can still drop it. Default ${DEFAULT_ACTIVE_DAYS}; 0 removes the age limit.`,
       },
       max_sessions: {
         type: 'number',
