@@ -40,6 +40,8 @@ export interface CachedTitleBlock {
  *
  * Declared structurally so a host without @deepseek-ai/dsh-session-projection-cache
  * needs no dependency, and a host with it passes the mounted service unchanged.
+ * One block serves both listing facts the discovery read needs: the title row
+ * and the list-metadata row that dates the session's last prompt.
  */
 export interface CachedTitleSource {
   cachedSnapshot(meta: CachedTitleMeta, keys?: readonly string[]): CachedTitleBlock | undefined
@@ -168,12 +170,12 @@ export class SessionQueryPeerDirectory implements PeerDirectory {
 
     // Titles come from durable checkpoints when the host mounts the projection
     // cache: a log fold per session is a whole log decode, which is the entire
-    // cost of listing peers on a large store.
+    // cost of listing peers on a large store. The same block dates the session.
     const titlesStartedAt = Date.now()
     // One resolve per listing: the report and the title read must agree on which
     // source served the titles.
     const cache = this.#readProjectionCache?.()
-    const titles = await this.#readTitles(visible.map((record) => record.header), cache)
+    const { titles, activity } = await this.#readListingFacts(visible.map((record) => record.header), cache)
 
     const sources: PeerNameSource[] = visible.map((record) => ({
       sessionId: record.header.id,
@@ -205,6 +207,7 @@ export class SessionQueryPeerDirectory implements PeerDirectory {
       const localAgent = this.#agents.get(sessionId as SessionId)
       const remote = remoteBySession.get(sessionId)
       const title = titles.get(sessionId)
+      const lastActivity = activity.get(sessionId)
 
       const location: PeerLocation = localAgent
         ? { kind: 'local' }
@@ -219,6 +222,7 @@ export class SessionQueryPeerDirectory implements PeerDirectory {
         ...(title === undefined ? {} : { title }),
         ...(record.header.cwd === undefined ? {} : { cwd: record.header.cwd }),
         createdAt: record.header.createdAt,
+        ...(lastActivity === undefined ? {} : { lastActivity }),
         // `record.live` is this process's store; a remote host is live too.
         live: location.kind !== 'offline',
         ...(localAgent === undefined ? {} : { status: localAgent.status }),
@@ -270,29 +274,32 @@ export class SessionQueryPeerDirectory implements PeerDirectory {
   }
 
   /**
-   * Read the latest title for each session without decoding a log when the
+   * Read the listing facts for each session without decoding a log when the
    * deployment mounts the projection cache; fold through the corpus otherwise.
    * @param headers - the listed sessions, whose headers are the cache's identity witness.
    * @param cache - the projection cache resolved once in this listing, or undefined to fold through the corpus.
-   * @returns session id to title, omitting sessions without a title.
+   * @returns session id to title, and session id to the time of its last prompt.
    */
-  async #readTitles(
+  async #readListingFacts(
     headers: readonly CachedTitleMeta[],
     cache: CachedTitleSource | undefined,
-  ): Promise<ReadonlyMap<string, string>> {
+  ): Promise<{ titles: ReadonlyMap<string, string>; activity: ReadonlyMap<string, number> }> {
     const titles = new Map<string, string>()
-    if (headers.length === 0) return titles
+    const activity = new Map<string, number>()
+    if (headers.length === 0) return { titles, activity }
 
     if (cache !== undefined) {
       // A served block can carry a null title, and that must not hide the
       // predecessor face; chain on the title, not on the block. Both faces view
       // stored rows and neither opens a log.
       for (const header of headers) {
-        const title = cachedTitle(cache.cachedSnapshot(header, ['title'])) ??
-          cachedTitle(cache.cachedPredecessorTitle(header))
+        const snapshot = cache.cachedSnapshot(header, ['title', 'sessionListMetadata'])
+        const title = cachedTitle(snapshot) ?? cachedTitle(cache.cachedPredecessorTitle(header))
         if (title !== undefined) titles.set(header.id, title)
+        const lastPromptAt = cachedLastPromptAt(snapshot)
+        if (lastPromptAt !== undefined) activity.set(header.id, lastPromptAt)
       }
-      return titles
+      return { titles, activity }
     }
 
     try {
@@ -310,7 +317,7 @@ export class SessionQueryPeerDirectory implements PeerDirectory {
         `title folding unavailable: ${error instanceof Error ? error.message : String(error)}`,
       )
     }
-    return titles
+    return { titles, activity }
   }
 }
 
@@ -325,4 +332,19 @@ export class SessionQueryPeerDirectory implements PeerDirectory {
 function cachedTitle(block: CachedTitleBlock | undefined): string | undefined {
   const value = block?.values.title
   return typeof value === 'string' && value !== '' ? value : undefined
+}
+
+/**
+ * The last-prompt time a cached list-metadata block carries, if any.
+ *
+ * The row is the session-list projection's own value, so an unreadable or
+ * malformed one dates nothing; the peer is then dated by its creation.
+ * @param block - the viewed checkpoint block, or undefined when no row matched.
+ * @returns epoch milliseconds of the last prompt, or undefined when the block carries none.
+ */
+function cachedLastPromptAt(block: CachedTitleBlock | undefined): number | undefined {
+  const value = block?.values.sessionListMetadata
+  if (typeof value !== 'object' || value === null) return undefined
+  const lastPromptAt = (value as { lastPromptAt?: unknown }).lastPromptAt
+  return typeof lastPromptAt === 'number' && Number.isFinite(lastPromptAt) ? lastPromptAt : undefined
 }

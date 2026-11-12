@@ -37,6 +37,11 @@ export interface PeerDescriptor {
   readonly cwd?: string
   /** Unix epoch milliseconds the session was created. */
   readonly createdAt: number
+  /**
+   * Unix epoch milliseconds of the session's last prompt, when the store
+   * recorded one. Absent for a session no projection checkpoint has covered.
+   */
+  readonly lastActivity?: number
   /** Whether a live agent currently drives this session. */
   readonly live: boolean
   /** The agent's lifecycle state, when it is live in this process. */
@@ -167,6 +172,18 @@ export function describeAge(elapsedMs: number): string {
   if (elapsedMs < HOUR_MS) return `${Math.floor(elapsedMs / MINUTE_MS)}m ago`
   if (elapsedMs < DAY_MS) return `${Math.floor(elapsedMs / HOUR_MS)}h ago`
   return `${Math.floor(elapsedMs / DAY_MS)}d ago`
+}
+
+/**
+ * When a peer last did anything worth noticing.
+ *
+ * A session's creation is the only time every store records, so a peer whose
+ * last prompt is unknown is dated by its creation.
+ * @param peer - the peer to date.
+ * @returns epoch milliseconds of its latest recorded activity.
+ */
+export function lastActivityAt(peer: Pick<PeerDescriptor, 'createdAt' | 'lastActivity'>): number {
+  return Math.max(peer.createdAt, peer.lastActivity ?? 0)
 }
 
 /**

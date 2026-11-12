@@ -284,4 +284,27 @@ describe('peer titles', () => {
     expect(peers.map((peer) => peer.title)).toEqual(['folded s1', 'folded s2'])
     expect(foldCalls.count).toBe(1)
   })
+
+  it('dates a peer by the last-prompt row it reads beside the title', async () => {
+    const lastPromptAt = 1_700_000_000_000
+    const cache: CachedTitleSource = {
+      cachedSnapshot: () => ({ values: { title: 't', sessionListMetadata: { blank: false, lastPromptAt } } }),
+      cachedPredecessorTitle: () => undefined,
+    }
+    const peers = await directory({ cache }).list()
+
+    expect(peers.map((peer) => peer.lastActivity)).toEqual([lastPromptAt, lastPromptAt])
+  })
+
+  it('reads no last-prompt time from an absent or malformed list-metadata row', async () => {
+    const served = [null, 'yesterday', { blank: true, lastPromptAt: null }, { lastPromptAt: Number.NaN }, 42]
+    for (const sessionListMetadata of served) {
+      const cache: CachedTitleSource = {
+        cachedSnapshot: () => ({ values: { title: 't', sessionListMetadata } }),
+        cachedPredecessorTitle: () => undefined,
+      }
+      const peers = await directory({ cache }).list()
+      expect(peers.every((peer) => peer.lastActivity === undefined)).toBe(true)
+    }
+  })
 })

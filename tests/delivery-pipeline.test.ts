@@ -237,6 +237,11 @@ interface Row {
   readonly task?: string
   readonly role?: string
   readonly working_on?: readonly string[]
+  readonly hidden_peers?: {
+    readonly total_peers: number
+    readonly older_than_days: number
+    readonly beyond_cap: number
+  }
 }
 
 interface Facts {
@@ -262,10 +267,15 @@ function runAs(sessionId: string): ToolRunContext {
 }
 
 /** Call `peer_list` as one session: its rows, and the text a model reads. */
-async function listAs(peers: readonly PeerDescriptor[], sessionId: string, facts: Facts = {}) {
+async function listAs(
+  peers: readonly PeerDescriptor[],
+  sessionId: string,
+  facts: Facts = {},
+  args: Record<string, unknown> = {},
+) {
   const tool = peerListTool(peers, facts)
-  const rows = (await tool.execute({}, runAs(sessionId))) as Row[]
-  const text = (tool.output.render({}, rows as never)[0] as { text: string }).text
+  const rows = (await tool.execute(args, runAs(sessionId))) as Row[]
+  const text = (tool.output.render(args, rows as never)[0] as { text: string }).text
   return { rows, text }
 }
 
@@ -404,5 +414,87 @@ describe('peer_list: every session sees its own canonical ID', () => {
     expect(frontendRow?.task).toBe('blocked on api-worker: waiting for the schema')
     expect(rows[0]?.working_on).toEqual(['src/api.ts (editing)'])
     expect(text).toContain('  working on: src/api.ts (editing)')
+  })
+})
+
+const DAY = 24 * 60 * 60 * 1000
+
+/** A session nothing is driving, last prompted `ago` milliseconds back. */
+function dormant(sessionId: string, ago: number): PeerDescriptor {
+  return peer({
+    sessionId,
+    name: sessionId,
+    createdAt: Date.now() - 40 * DAY,
+    lastActivity: Date.now() - ago,
+    live: false,
+    location: { kind: 'offline' },
+  })
+}
+
+describe('peer_list: the default view of sessions a caller can still act with', () => {
+  const self = peer({ sessionId: 'session-a', name: 'api-worker' })
+
+  it('lists a running session and one prompted inside the window, and counts the rest', async () => {
+    const running = peer({ sessionId: 'session-run', name: 'run-worker', createdAt: Date.now() - 40 * DAY })
+    const { rows, text } = await listAs(
+      [self, running, dormant('session-recent', 2 * DAY), dormant('session-stale', 4 * DAY)],
+      'session-a',
+    )
+
+    expect(rows.map((row) => row.session_id)).toEqual(['session-a', 'session-run', 'session-recent'])
+    expect(rows[0]?.hidden_peers).toEqual({ total_peers: 3, older_than_days: 1, beyond_cap: 0 })
+    expect(text).toContain('3 addressable sessions; 2 listed, 1 idle longer than 3 days not listed.')
+    expect(text).not.toContain('No other sessions are reachable.')
+  })
+
+  it('dates a peer by its last prompt rather than by its creation', async () => {
+    const { rows } = await listAs([self, dormant('session-recent', 12 * 60 * 60 * 1000)], 'session-a')
+
+    expect(rows.map((row) => row.session_id)).toEqual(['session-a', 'session-recent'])
+  })
+
+  it('treats a session with no recorded prompt as old as its creation', async () => {
+    const unrecorded = peer({
+      sessionId: 'session-old',
+      name: 'old-worker',
+      createdAt: Date.now() - 40 * DAY,
+      live: false,
+      location: { kind: 'offline' },
+    })
+    const { rows } = await listAs([self, unrecorded], 'session-a')
+
+    expect(rows).toHaveLength(1)
+    expect(rows[0]?.hidden_peers?.older_than_days).toBe(1)
+  })
+
+  it('caps the view and says how many peers it left out', async () => {
+    const many = Array.from({ length: 40 }, (_, index) => dormant(`session-many-${index}`, DAY))
+    const { rows, text } = await listAs([self, ...many], 'session-a')
+
+    expect(rows).toHaveLength(31)
+    expect(rows[0]?.hidden_peers).toEqual({ total_peers: 40, older_than_days: 0, beyond_cap: 10 })
+    expect(text).toContain('40 addressable sessions; 30 listed, 10 beyond the 30-session limit not listed.')
+  })
+
+  it('honours a narrower window and a smaller cap together', async () => {
+    const peers = [
+      dormant('session-1h', 60 * 60 * 1000),
+      dormant('session-2h', 2 * 60 * 60 * 1000),
+      dormant('session-5d', 5 * DAY),
+      dormant('session-9d', 9 * DAY),
+    ]
+    const { rows } = await listAs([self, ...peers], 'session-a', {}, { active_days: 1, max_sessions: 1 })
+
+    expect(rows.map((row) => row.session_id)).toEqual(['session-a', 'session-1h'])
+    expect(rows[0]?.hidden_peers).toEqual({ total_peers: 4, older_than_days: 2, beyond_cap: 1 })
+  })
+
+  it('widens to every session when both bounds are removed', async () => {
+    const many = Array.from({ length: 40 }, (_, index) => dormant(`session-many-${index}`, 30 * DAY))
+    const { rows, text } = await listAs([self, ...many], 'session-a', {}, { active_days: 0, max_sessions: 0 })
+
+    expect(rows).toHaveLength(41)
+    expect(rows[0]?.hidden_peers).toBeUndefined()
+    expect(text).not.toContain('not listed')
   })
 })
