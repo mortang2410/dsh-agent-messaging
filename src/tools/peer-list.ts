@@ -118,8 +118,11 @@ function selectPeers(
 ): PeerSelection {
   const windowStart = activeDays > 0 ? now - activeDays * DAY_MS : Number.NEGATIVE_INFINITY
   const reachable = peers.filter((peer) => peer.live || lastActivityAt(peer) >= windowStart)
+  // One rule ranks the view: last activity, because that is what the cap keeps
+  // when it cuts. Reachability only breaks a tie, so a live peer cannot outrank
+  // a peer the caller talked to an hour ago.
   const ordered = reachable.toSorted(
-    (left, right) => Number(right.live) - Number(left.live) || lastActivityAt(right) - lastActivityAt(left),
+    (left, right) => lastActivityAt(right) - lastActivityAt(left) || Number(right.live) - Number(left.live),
   )
   // The caller's own row is always first and always listed, so it spends one
   // place of the cap: 30 sessions means 30 entries, not 30 peers beside SELF.

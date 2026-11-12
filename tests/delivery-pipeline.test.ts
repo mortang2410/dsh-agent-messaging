@@ -435,7 +435,12 @@ describe('peer_list: the default view of sessions a caller can still act with', 
   const self = peer({ sessionId: 'session-a', name: 'api-worker' })
 
   it('lists a running session and one prompted inside the window, and counts the rest', async () => {
-    const running = peer({ sessionId: 'session-run', name: 'run-worker', createdAt: Date.now() - 40 * DAY })
+    const running = peer({
+      sessionId: 'session-run',
+      name: 'run-worker',
+      createdAt: Date.now() - 40 * DAY,
+      lastActivity: Date.now() - 60 * 60 * 1000,
+    })
     const { rows, text } = await listAs(
       [self, running, dormant('session-recent', 2 * DAY), dormant('session-stale', 4 * DAY)],
       'session-a',
@@ -491,6 +496,26 @@ describe('peer_list: the default view of sessions a caller can still act with', 
     expect(text).toContain(
       '4 peers; 1 listed, 2 idle longer than 1 day and 1 beyond the 2-session limit not listed.',
     )
+  })
+
+  it('keeps the newest activity when the cap spans live and inactive peers', async () => {
+    // Thirty loaded agents whose last prompt is ten days old, and one closed
+    // session the caller talked to an hour ago. Reachability must not outrank
+    // recency, or the cap keeps the stale ones and drops the conversation the
+    // caller actually had.
+    const live = Array.from({ length: 30 }, (_, index) =>
+      peer({
+        sessionId: `session-stale-${index}`,
+        name: `stale-${index}`,
+        createdAt: Date.now() - 40 * DAY,
+        lastActivity: Date.now() - 10 * DAY - index * 60_000,
+      }),
+    )
+    const { rows } = await listAs([self, ...live, dormant('session-idle-recent', 60 * 60 * 1000)], 'session-a')
+
+    expect(rows).toHaveLength(30)
+    expect(rows[1]?.session_id).toBe('session-idle-recent')
+    expect(rows[0]?.hidden_peers).toEqual({ total_peers: 31, older_than_days: 0, beyond_cap: 2 })
   })
 
   it('lets the cap win over live peers and says so, keeping the newest activity', async () => {
