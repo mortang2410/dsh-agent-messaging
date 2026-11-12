@@ -524,14 +524,18 @@ describe('peer_list: the default view of sessions a caller can still act with', 
 
   it('treats a negative bound as no request rather than as an unbounded view', async () => {
     const many = [
+      // Older than the default window, so a bound that quietly turns into 0
+      // (no limit) would list it and change both counts below.
+      dormant('session-10d', 10 * DAY),
       dormant('session-2d', 2 * DAY),
       ...Array.from({ length: 39 }, (_, index) => dormant(`session-many-${index}`, DAY)),
     ]
-    const { rows } = await listAs([self, ...many], 'session-a', {}, { active_days: -1, max_sessions: -1 })
+    const { rows, text } = await listAs([self, ...many], 'session-a', {}, { active_days: -1, max_sessions: -1 })
 
     // The documented defaults: live plus the last three days, at most 30 rows.
     expect(rows).toHaveLength(30)
-    expect(rows[0]?.hidden_peers).toEqual({ total_peers: 40, older_than_days: 0, beyond_cap: 11 })
+    expect(rows[0]?.hidden_peers).toEqual({ total_peers: 41, older_than_days: 1, beyond_cap: 11 })
+    expect(text).toContain('1 idle longer than 3 days')
   })
 
   it('widens to every session when both bounds are removed', async () => {
