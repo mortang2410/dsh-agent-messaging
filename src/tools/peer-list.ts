@@ -64,19 +64,30 @@ interface HiddenPeers {
 
 /** How far back a peer may have last acted and still be listed by default. */
 const DEFAULT_ACTIVE_DAYS = 3
-/** How many peers one listing returns by default. */
+/** How many sessions one listing returns by default, the caller's own row included. */
 const DEFAULT_MAX_SESSIONS = 30
 const DAY_MS = 24 * 60 * 60 * 1000
 
 /**
  * A caller-supplied bound, made usable.
  * @param value - the argument as the model sent it, if it sent one.
- * @param fallback - the bound this listing applies when the argument is absent.
- * @returns a non-negative whole number; 0 means unbounded.
+ * @param fallback - the bound this listing applies when the argument is not a bound.
+ * @returns the value when it is a non-negative finite number, 0 included; the
+ *   fallback otherwise, because a negative or broken argument is not a request
+ *   for a view, and 0 already means "no limit".
  */
 function limit(value: number | undefined, fallback: number): number {
-  if (value === undefined || !Number.isFinite(value)) return fallback
-  return Math.max(0, Math.floor(value))
+  if (value === undefined || !Number.isFinite(value) || value < 0) return fallback
+  return value
+}
+
+/**
+ * How many sessions a listing may return.
+ * @param maxSessions - the bounded argument, 0 for no cap.
+ * @returns 0 for no cap, otherwise a whole number of sessions, at least the caller's own row.
+ */
+function sessionCap(maxSessions: number): number {
+  return maxSessions === 0 ? 0 : Math.max(1, Math.floor(maxSessions))
 }
 
 /** The peers one listing shows, and the ones each rule leaves out. */
@@ -95,7 +106,7 @@ interface PeerSelection {
  * readable long before it stops growing.
  * @param peers - every addressable peer except the caller.
  * @param activeDays - age of the oldest activity still listed; 0 for no window.
- * @param maxSessions - most peers to return; 0 for no cap.
+ * @param maxSessions - most sessions to return, the caller's own row included; 0 for no cap.
  * @param now - the current time, supplied so a listing is testable.
  * @returns the listed peers, newest activity first, and the two omission counts.
  */
@@ -110,7 +121,10 @@ function selectPeers(
   const ordered = reachable.toSorted(
     (left, right) => Number(right.live) - Number(left.live) || lastActivityAt(right) - lastActivityAt(left),
   )
-  const listed = maxSessions > 0 ? ordered.slice(0, maxSessions) : ordered
+  // The caller's own row is always first and always listed, so it spends one
+  // place of the cap: 30 sessions means 30 entries, not 30 peers beside SELF.
+  const cap = sessionCap(maxSessions)
+  const listed = cap === 0 ? ordered : ordered.slice(0, cap - 1)
   return {
     listed,
     olderThanWindow: peers.length - reachable.length,
@@ -128,10 +142,10 @@ function selectPeers(
 function renderOmission(hidden: HiddenPeers, activeDays: number, maxSessions: number): string {
   const reasons: string[] = []
   if (hidden.older_than_days > 0) reasons.push(`${hidden.older_than_days} idle longer than ${activeDays} days`)
-  if (hidden.beyond_cap > 0) reasons.push(`${hidden.beyond_cap} beyond the ${maxSessions}-session limit`)
+  if (hidden.beyond_cap > 0) reasons.push(`${hidden.beyond_cap} beyond the ${sessionCap(maxSessions)}-session limit`)
   const shown = hidden.total_peers - hidden.older_than_days - hidden.beyond_cap
   return (
-    `${hidden.total_peers} addressable sessions; ${shown} listed, ${reasons.join(' and ')} not listed. ` +
+    `${hidden.total_peers} peers; ${shown} listed, ${reasons.join(' and ')} not listed. ` +
     'Pass active_days or max_sessions to widen this, or address any session by its full id.'
   )
 }
@@ -181,8 +195,8 @@ export function createPeerListTool(
       'session ID of a peer, or when an address was ambiguous.',
       'Sessions marked "not running" can still be sent to:',
       'the message is queued and delivered when that session next starts.',
-      'It lists the sessions that are running plus those active in the last 3 days, at most 30 peers;',
-      'active_days and max_sessions widen that view, and 0 means no limit.',
+      'It lists the sessions that are running plus those active in the last 3 days, at most 30 sessions',
+      'counting this SELF entry; active_days and max_sessions widen that view, and 0 means no limit.',
       'This returns only session identities — never their conversation contents.',
       'A session marked "not running" is not working on anything: do not conclude that a task belongs to one',
       'because its title mentions that task. If work needs doing and nobody live owns it, it is yours or your user\'s.',
@@ -198,7 +212,7 @@ export function createPeerListTool(
         type: 'number',
         default: DEFAULT_MAX_SESSIONS,
         description:
-          `The most peers to list after SELF. Default ${DEFAULT_MAX_SESSIONS}; 0 removes the limit.`,
+          `The most sessions to list, counting the SELF entry, so the default ${DEFAULT_MAX_SESSIONS} means SELF plus ${DEFAULT_MAX_SESSIONS - 1} peers. 0 removes the limit.`,
       },
     },
     output: {

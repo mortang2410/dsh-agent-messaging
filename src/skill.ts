@@ -58,11 +58,11 @@ of a false belief is the most expensive message you can send.
 Call \`peer_list\` when you need the current session-ID mapping: the full session
 ID, name and directory of the sessions you can reach. Your own entry is marked
 SELF and shows your canonical ID; the others are PEER. It lists what is running
-plus what was active in the last three days, capped at 30 peers, and its last
-line counts the sessions it left out — pass \`active_days\` or \`max_sessions\` to
-widen it, and remember that \`peer_send\` still accepts any full session ID. Read
-IDs from that listing rather than from memory. A name derived from a title can
-change when the title does, and an alias does not.
+plus what was active in the last three days, capped at 30 sessions counting its
+own row, and its last line counts the sessions it left out — pass \`active_days\`
+or \`max_sessions\` to widen it, and remember that \`peer_send\` still accepts any
+full session ID. Read IDs from that listing rather than from memory. A name
+derived from a title can change when the title does, and an alias does not.
 
 ## When something is settled
 

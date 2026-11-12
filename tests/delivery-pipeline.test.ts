@@ -443,7 +443,7 @@ describe('peer_list: the default view of sessions a caller can still act with', 
 
     expect(rows.map((row) => row.session_id)).toEqual(['session-a', 'session-run', 'session-recent'])
     expect(rows[0]?.hidden_peers).toEqual({ total_peers: 3, older_than_days: 1, beyond_cap: 0 })
-    expect(text).toContain('3 addressable sessions; 2 listed, 1 idle longer than 3 days not listed.')
+    expect(text).toContain('3 peers; 2 listed, 1 idle longer than 3 days not listed.')
     expect(text).not.toContain('No other sessions are reachable.')
   })
 
@@ -467,13 +467,14 @@ describe('peer_list: the default view of sessions a caller can still act with', 
     expect(rows[0]?.hidden_peers?.older_than_days).toBe(1)
   })
 
-  it('caps the view and says how many peers it left out', async () => {
+  it('caps the view at 30 rows counting the caller, and says how many peers it left out', async () => {
     const many = Array.from({ length: 40 }, (_, index) => dormant(`session-many-${index}`, DAY))
     const { rows, text } = await listAs([self, ...many], 'session-a')
 
-    expect(rows).toHaveLength(31)
-    expect(rows[0]?.hidden_peers).toEqual({ total_peers: 40, older_than_days: 0, beyond_cap: 10 })
-    expect(text).toContain('40 addressable sessions; 30 listed, 10 beyond the 30-session limit not listed.')
+    expect(rows).toHaveLength(30)
+    expect(rows[0]?.is_self).toBe(true)
+    expect(rows[0]?.hidden_peers).toEqual({ total_peers: 40, older_than_days: 0, beyond_cap: 11 })
+    expect(text).toContain('40 peers; 29 listed, 11 beyond the 30-session limit not listed.')
   })
 
   it('honours a narrower window and a smaller cap together', async () => {
@@ -483,10 +484,54 @@ describe('peer_list: the default view of sessions a caller can still act with', 
       dormant('session-5d', 5 * DAY),
       dormant('session-9d', 9 * DAY),
     ]
-    const { rows } = await listAs([self, ...peers], 'session-a', {}, { active_days: 1, max_sessions: 1 })
+    const { rows } = await listAs([self, ...peers], 'session-a', {}, { active_days: 1, max_sessions: 2 })
 
     expect(rows.map((row) => row.session_id)).toEqual(['session-a', 'session-1h'])
     expect(rows[0]?.hidden_peers).toEqual({ total_peers: 4, older_than_days: 2, beyond_cap: 1 })
+  })
+
+  it('leaves out a peer the narrowed window excludes but the default window keeps', async () => {
+    const twoDays = dormant('session-2d', 2 * DAY)
+    const byDefault = await listAs([self, twoDays], 'session-a')
+    const narrowed = await listAs([self, twoDays], 'session-a', {}, { active_days: 1 })
+
+    expect(byDefault.rows.map((row) => row.session_id)).toEqual(['session-a', 'session-2d'])
+    expect(narrowed.rows).toHaveLength(1)
+    expect(narrowed.rows[0]?.hidden_peers?.older_than_days).toBe(1)
+  })
+
+  it('keeps a recently created session no checkpoint has dated yet', async () => {
+    const unrecordedRecent = peer({
+      sessionId: 'session-new',
+      name: 'new-worker',
+      createdAt: Date.now() - DAY,
+      live: false,
+      location: { kind: 'offline' },
+    })
+    const { rows } = await listAs([self, unrecordedRecent], 'session-a')
+
+    expect(rows.map((row) => row.session_id)).toEqual(['session-a', 'session-new'])
+  })
+
+  it('orders the view by activity, newest first, not by the order the store listed', async () => {
+    const { rows } = await listAs(
+      [self, dormant('session-3h', 3 * 60 * 60 * 1000), dormant('session-1h', 60 * 60 * 1000)],
+      'session-a',
+    )
+
+    expect(rows.map((row) => row.session_id)).toEqual(['session-a', 'session-1h', 'session-3h'])
+  })
+
+  it('treats a negative bound as no request rather than as an unbounded view', async () => {
+    const many = [
+      dormant('session-2d', 2 * DAY),
+      ...Array.from({ length: 39 }, (_, index) => dormant(`session-many-${index}`, DAY)),
+    ]
+    const { rows } = await listAs([self, ...many], 'session-a', {}, { active_days: -1, max_sessions: -1 })
+
+    // The documented defaults: live plus the last three days, at most 30 rows.
+    expect(rows).toHaveLength(30)
+    expect(rows[0]?.hidden_peers).toEqual({ total_peers: 40, older_than_days: 0, beyond_cap: 11 })
   })
 
   it('widens to every session when both bounds are removed', async () => {

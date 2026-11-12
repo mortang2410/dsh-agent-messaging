@@ -235,10 +235,11 @@ every other session sees for it. Identities only; never their contents.
 
 The store keeps every session ever created, so the listing is a window on it
 rather than the whole of it: running sessions, plus any that were prompted in the
-last three days, at most 30 peers, newest activity first. When that window hides
-something, the last line counts what it left out and the call takes `active_days`
-and `max_sessions` to widen it (`0` means no limit on either). A hidden session is
-still addressable: `peer_send` resolves it from its full session ID.
+last three days, at most 30 sessions counting the caller's own row, newest
+activity first. When that window hides something, the last line counts what it
+left out and the call takes `active_days` and `max_sessions` to widen it (`0`
+means no limit on either). A hidden session is still addressable: `peer_send`
+resolves it from its full session ID.
 
 ```
 SELF: payments-api [running] "Add tenant_id to charges"
