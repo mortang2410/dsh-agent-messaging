@@ -100,10 +100,11 @@ interface PeerSelection {
 /**
  * Choose the peers one listing shows.
  *
- * A live peer is always shown: it is the colleague the caller is addressing. An
- * offline one is shown while it has acted inside the window, because the store
- * keeps every session ever created and a listing of all of them stops being
- * readable long before it stops growing.
+ * A live peer enters the view whatever its age: it is the colleague the caller
+ * is addressing. An offline one enters only while it has acted inside the
+ * window, because the store keeps every session ever created and a listing of
+ * all of them stops being readable long before it stops growing. The cap can
+ * still drop either kind, newest activity first.
  * @param peers - every addressable peer except the caller.
  * @param activeDays - age of the oldest activity still listed; 0 for no window.
  * @param maxSessions - most sessions to return, the caller's own row included; 0 for no cap.
