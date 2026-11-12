@@ -477,17 +477,38 @@ describe('peer_list: the default view of sessions a caller can still act with', 
     expect(text).toContain('40 peers; 29 listed, 11 beyond the 30-session limit not listed.')
   })
 
-  it('honours a narrower window and a smaller cap together', async () => {
+  it('honours a narrower window and a smaller cap together, and names both reasons', async () => {
     const peers = [
       dormant('session-1h', 60 * 60 * 1000),
       dormant('session-2h', 2 * 60 * 60 * 1000),
       dormant('session-5d', 5 * DAY),
       dormant('session-9d', 9 * DAY),
     ]
-    const { rows } = await listAs([self, ...peers], 'session-a', {}, { active_days: 1, max_sessions: 2 })
+    const { rows, text } = await listAs([self, ...peers], 'session-a', {}, { active_days: 1, max_sessions: 2 })
 
     expect(rows.map((row) => row.session_id)).toEqual(['session-a', 'session-1h'])
     expect(rows[0]?.hidden_peers).toEqual({ total_peers: 4, older_than_days: 2, beyond_cap: 1 })
+    expect(text).toContain(
+      '4 peers; 1 listed, 2 idle longer than 1 day and 1 beyond the 2-session limit not listed.',
+    )
+  })
+
+  it('lets the cap win over live peers and says so, keeping the newest activity', async () => {
+    // Thirty live peers plus SELF cannot all fit in the default cap of 30 rows.
+    const live = Array.from({ length: 30 }, (_, index) =>
+      peer({
+        sessionId: `session-live-${index}`,
+        name: `live-${index}`,
+        createdAt: Date.now() - 40 * DAY,
+        lastActivity: Date.now() - index * 60_000,
+      }),
+    )
+    const { rows, text } = await listAs([self, ...live], 'session-a')
+
+    expect(rows).toHaveLength(30)
+    expect(rows.at(-1)?.session_id).toBe('session-live-28')
+    expect(rows[0]?.hidden_peers).toEqual({ total_peers: 30, older_than_days: 0, beyond_cap: 1 })
+    expect(text).toContain('30 peers; 29 listed, 1 beyond the 30-session limit not listed.')
   })
 
   it('leaves out a peer the narrowed window excludes but the default window keeps', async () => {

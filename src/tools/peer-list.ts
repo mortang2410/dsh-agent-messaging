@@ -141,7 +141,8 @@ function selectPeers(
  */
 function renderOmission(hidden: HiddenPeers, activeDays: number, maxSessions: number): string {
   const reasons: string[] = []
-  if (hidden.older_than_days > 0) reasons.push(`${hidden.older_than_days} idle longer than ${activeDays} days`)
+  const window = `${activeDays} ${activeDays === 1 ? 'day' : 'days'}`
+  if (hidden.older_than_days > 0) reasons.push(`${hidden.older_than_days} idle longer than ${window}`)
   if (hidden.beyond_cap > 0) reasons.push(`${hidden.beyond_cap} beyond the ${sessionCap(maxSessions)}-session limit`)
   const shown = hidden.total_peers - hidden.older_than_days - hidden.beyond_cap
   return (
@@ -196,7 +197,8 @@ export function createPeerListTool(
       'Sessions marked "not running" can still be sent to:',
       'the message is queued and delivered when that session next starts.',
       'It lists the sessions that are running plus those active in the last 3 days, at most 30 sessions',
-      'counting this SELF entry; active_days and max_sessions widen that view, and 0 means no limit.',
+      'counting this SELF entry; when more qualify than fit, the most recent activity wins.',
+      'active_days and max_sessions widen that view, and 0 means no limit.',
       'This returns only session identities — never their conversation contents.',
       'A session marked "not running" is not working on anything: do not conclude that a task belongs to one',
       'because its title mentions that task. If work needs doing and nobody live owns it, it is yours or your user\'s.',
